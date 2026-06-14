@@ -1,0 +1,104 @@
+version: 2
+
+models:
+
+  # ===========================================================================
+  # fact.fct_booking_events
+  # ===========================================================================
+  - name: fct_booking_events
+    description: >
+      Grain: one row per booking_submitted event per session (chronologically first).
+      Scoped exclusively to event_type = 'booking_submitted'.
+      Consumed by fct_booking_funnel and queryable standalone for booking volume reporting.
+
+    columns:
+
+      - name: booking_event_key
+        description: >
+          SHA2 surrogate PK derived from session_id | sr_id | first_booking_ts.
+          Consistent with fct_booking_funnel.booking_key.
+        data_tests:
+          - unique:
+              name: fct_booking_events__booking_event_key__unique
+              config:
+                severity: error
+          - not_null:
+              name: fct_booking_events__booking_event_key__not_null
+
+      - name: session_id
+        description: >
+          Natural key of the session. One booking_submitted event per session enforced
+          by ROW_NUMBER() deduplication on event_ts ASC in the model.
+        data_tests:
+          - unique:
+              name: fct_booking_events__session_id__unique
+              description: >
+                Catches deduplication failure — if a session appears more than once,
+                the ROW_NUMBER() filter to event_rank = 1 failed.
+              config:
+                severity: error
+          - not_null:
+              name: fct_booking_events__session_id__not_null
+
+      - name: sr_id
+        description: Service request ID extracted from properties:sr_id JSON.
+        data_tests:
+          - not_null:
+              name: fct_booking_events__sr_id__not_null
+              description: >
+                Confirms the null sr_id guard in the model worked correctly.
+                Any null here means the WHERE clause filter failed.
+
+      - name: first_booking_ts
+        description: Timestamp of the chronologically first booking_submitted event per session.
+        data_tests:
+          - not_null:
+              name: fct_booking_events__first_booking_ts__not_null
+
+      - name: event_date
+        description: YYYYMMDD char(8) derived from first_booking_ts; FK to dim_date.date_key.
+        data_tests:
+          - not_null:
+              name: fct_booking_events__event_date__not_null
+          - relationships:
+              name: fct_booking_events__event_date__fk_dim_date
+              description: >
+                Catches bookings with timestamps outside the dim_date spine range.
+                Extend the date spine when this test fails on future dates.
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+
+      - name: dw_updated_at
+        description: Timestamp written by dbt at model run time.
+        data_tests:
+          - not_null:
+              name: fct_booking_events__dw_updated_at__not_null
+
+  # ===========================================================================
+  # fact.fct_booking_funnel
+  # ===========================================================================
+  - name: fct_booking_funnel
+    description: >
+      Grain: one row per service request (booking attempt). Base table for the
+      booking_conversion_rate metric — see models/semantic/booking_conversion_rate.md.
+
+    columns:
+
+      - name: booking_key
+        description: >
+          Natural key (= sr_id). Must be unique — booking_conversion_rate is
+          defined as SUM(is_converted) / COUNT(DISTINCT booking_key), and a
+          duplicate booking_key (e.g. from dim_pro fanning out on category_key)
+          silently inflates both numerator and denominator.
+        data_tests:
+          - unique:
+              name: fct_booking_funnel__booking_key__unique
+              description: >
+                Structural guardrail for booking_conversion_rate. A failure here
+                means the metric is wrong (fan-out from the dim_pro join on
+                category_key) — treat as P1.
+              config:
+                severity: error
+          - not_null:
+              name: fct_booking_funnel__booking_key__not_null

@@ -1,0 +1,153 @@
+version: 2
+
+sources:
+  - name: raw
+    database: angi
+    schema: raw
+    description: >
+      Raw source data as landed by the ingestion pipeline. No transformations,
+      no deduplication, no business logic applied. Owned by the data engineering team.
+
+    tables:
+      - name: raw_events
+        description: >
+          One row per user event fired during a web/app session. Immutable after insert.
+          `properties:sr_id` carries the service request ID for booking_submitted events.
+          Consumed by fact_booking_events and fct_session_events.
+        config:
+          loaded_at_field: _loaded_at
+        columns:
+          - name: event_id
+            description: Unique identifier for this event. PK.
+            data_tests:
+              - unique
+              - not_null
+          - name: session_id
+            description: FK to raw_sessions.session_id; ties the event to a homeowner session.
+          - name: event_type
+            description: >
+              Type of event fired. Known values: booking_started, booking_submitted, pro_viewed.
+          - name: event_ts
+            description: UTC timestamp when the event fired. Never null.
+            data_tests:
+              - not_null
+          - name: properties
+            description: >
+              JSON blob of event-specific attributes. properties:sr_id carries the
+              service request ID for booking_submitted events.
+          - name: _loaded_at
+            description: Timestamp when this row was written by the ingestion job.
+          - name: _source_file
+            description: Source filename or Kafka offset for traceability and reprocessing.
+
+      - name: raw_sessions
+        description: >
+          One row per homeowner session. Mutable — ended_at is populated after session
+          close and can arrive late. updated_at drives incremental loads in dim_session.
+          Consumed by dim_session and fct_booking_funnel.
+        config:
+          loaded_at_field: _loaded_at
+        columns:
+          - name: session_id
+            description: Unique identifier for the session. PK.
+            data_tests:
+              - unique
+              - not_null
+          - name: started_at
+            description: UTC timestamp when the session was initiated. Never null.
+            data_tests:
+              - not_null
+          - name: ended_at
+            description: >
+              UTC timestamp when the session ended cleanly. Null for sessions that
+              crash, time out, or are abandoned mid-flow.
+          - name: page_type
+            description: >
+              Page type active at session start. Known values: home, search,
+              booking_form, confirmation.
+          - name: updated_at
+            description: >
+              UTC timestamp of the last update to this row. Incremental trigger for
+              dim_session.
+          - name: _loaded_at
+            description: Timestamp when this row was written by the ingestion job.
+          - name: _source_file
+            description: Source filename for traceability.
+
+      - name: service_requests
+        description: >
+          One row per service request submitted by a homeowner. Mutable — status is
+          updated in place as the SR progresses (submitted -> matched -> completed,
+          or submitted -> cancelled). updated_at is the incremental trigger for
+          fct_booking_funnel and dim_service_request. Consumed by dim_service_request
+          and fct_booking_funnel.
+        config:
+          loaded_at_field: _loaded_at
+        columns:
+          - name: sr_id
+            description: Unique identifier for the service request. PK.
+            data_tests:
+              - unique
+              - not_null
+          - name: created_at
+            description: UTC timestamp when the SR was first created. Immutable after insert.
+            data_tests:
+              - not_null
+          - name: status
+            description: >
+              Current status of the SR. Known values: submitted, matched, completed,
+              cancelled.
+          - name: category
+            description: >
+              Service category requested, e.g. plumbing, electrical, hvac. Used to
+              resolve category_key in dim_category.
+          - name: geography
+            description: >
+              City-level geography string, e.g. "new york", "boston". Used to resolve
+              geography_key in dim_geography.
+          - name: updated_at
+            description: >
+              UTC timestamp of the last status change. Incremental trigger for
+              fct_booking_funnel and dim_service_request.
+          - name: _loaded_at
+            description: Timestamp when this row was written by the ingestion job.
+          - name: _source_file
+            description: Source filename for traceability.
+
+      - name: raw_pro_profiles
+        description: >
+          One row per pro profile. sp_id is NOT unique — a pro can hold multiple
+          profiles, one per service category they offer. Always deduplicate on
+          sp_id + category before joining downstream. Mutable — is_active changes
+          when a pro activates or deactivates, and updated_at drives SCD Type 2
+          versioning in dim_pro. Consumed by dim_pro.
+        config:
+          loaded_at_field: _loaded_at
+        columns:
+          - name: sp_id
+            description: >
+              Service provider identifier. NOT unique at this level — one row per
+              sp_id per category.
+            data_tests:
+              - not_null
+          - name: market
+            description: >
+              Geographic market the pro operates in, e.g. "new york", "boston".
+              Coarser than geography — typically a metro area.
+          - name: category
+            description: >
+              Service category for this profile, e.g. plumbing, electrical, hvac.
+              sp_id + category is the effective grain of this table.
+          - name: is_active
+            description: >
+              Whether this pro profile is currently live and bookable. Mutable.
+            data_tests:
+              - not_null
+          - name: updated_at
+            description: >
+              UTC timestamp of the last update to this profile row. Incremental
+              trigger for SCD Type 2 versioning in dim_pro.
+          - name: _loaded_at
+            description: Timestamp when this row was written by the ingestion job.
+          - name: _source_file
+            description: Source filename for traceability.
