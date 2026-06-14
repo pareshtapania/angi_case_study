@@ -43,6 +43,11 @@ sessions as (
         session_id                                  as session_key
     from {{ ref('dim_session') }}
 
+    {% if is_incremental() %}
+        -- daily incremental: 1-day lookback + 1-day buffer
+        where updated_at >= dateadd('day', -1, current_date)
+    {% endif %}
+
 ),
 
 final as (

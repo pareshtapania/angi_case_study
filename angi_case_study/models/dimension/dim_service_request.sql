@@ -24,6 +24,7 @@ with source as (
         sr.status,
         sr.category,
         sr.geography,
+        sr.sp_id,
         sr.updated_at,
 
         -- resolve category_key and geography_key from dimensions
@@ -79,6 +80,7 @@ with source as (
         -- SR attributes
         s.created_at,
         s.status,
+        s.sp_id,
 
         -- FK keys (replaces raw category/geography strings)
         s.category_key,

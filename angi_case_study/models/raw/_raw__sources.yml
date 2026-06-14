@@ -109,6 +109,12 @@ sources:
             description: >
               UTC timestamp of the last status change. Incremental trigger for
               fct_booking_funnel and dim_service_request.
+          - name: sp_id
+            description: >
+              FK to raw_pro_profiles.sp_id; the pro matched to this SR. Used
+              together with category_key to join pro profile context onto
+              fct_booking_funnel without fanning out on category_key alone
+              (a category can have multiple pros).
           - name: _loaded_at
             description: Timestamp when this row was written by the ingestion job.
           - name: _source_file

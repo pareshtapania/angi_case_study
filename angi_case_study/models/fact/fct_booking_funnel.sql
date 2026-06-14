@@ -10,37 +10,19 @@
 -- =============================================================================
 -- fct_booking_funnel
 -- Grain   : one row per service request (booking attempt)
--- Strategy: daily incremental merge on booking_key (= sr_id)
---           Dual lookback:
---             (a) 14-day on fact_booking_events for new booking events
---             (b) 1-day on service_requests.updated_at for late status changes
---           Both windows needed: (a) catches new bookings, (b) catches
---           existing bookings whose SR status flipped to completed/cancelled
---           after the event window closed
+-- Strategy: daily incremental merge on booking_key (= sr_id), 1-day lookback.
+--           A service request is in scope for an incremental run if any of:
+--             (a) its fct_booking_events row was created in the last 1 day
+--             (b) raw.service_requests.updated_at changed in the last 1 day
+--             (c) its dim_service_request (current SCD2) row changed in the
+--                 last 1 day
+--           (b)/(c) catch late status changes (e.g. completed/cancelled)
+--           on bookings whose original event is outside the 1-day window.
 -- =============================================================================
 
 with
 
--- ── Step 1: booking events (from fact_booking_events) ────────────────────────
-booking_events as (
-
-    select
-        booking_event_key,
-        session_id,
-        sr_id,
-        first_booking_ts,
-        event_date
-    from {{ ref('fct_booking_events') }}
-
-    {% if is_incremental() %}
-        where first_booking_ts >= dateadd('day', -14, current_date)
-    {% endif %}
-
-),
-
--- ── Step 2: service requests with FK resolution ───────────────────────────────
--- Also picks up SRs whose status changed recently (late completions/cancels)
--- even if their originating event is outside the 14-day window
+-- ── Step 1: service requests with FK resolution ───────────────────────────────
 service_requests as (
 
     select
@@ -48,6 +30,7 @@ service_requests as (
         sr.created_at,
         sr.status,
         sr.updated_at,
+        sr.sp_id,
 
         -- resolve category_key and geography_key
         dc.category_key,
@@ -60,26 +43,26 @@ service_requests as (
             1, 0)                                   as is_matched,
 
         -- SCD Type 2: current version of dim_service_request
-        dsr.service_request_key
+        dsr.service_request_key,
+        dsr.valid_from                              as dsr_valid_from
+
 
     from {{ source('raw', 'service_requests') }} sr
     left join {{ ref('dim_category') }}         dc  on sr.category  = dc.category
     left join {{ ref('dim_geography') }}        dg  on sr.geography = dg.geography
-    left join {{ ref('dim_service_request') }}  dsr
-        on sr.sr_id = dsr.sr_id
-        and dsr.is_current = true
+    left join {{ ref('dim_service_request') }}  dsr on sr.sr_id = dsr.sr_id
+
 
     {% if is_incremental() %}
     where
-        -- new bookings in scope
-        sr.sr_id in (select sr_id from booking_events)
-        -- OR status changed recently (catches late completions)
-        or sr.updated_at >= dateadd('day', -1, current_date)
+        sr.updated_at >= dateadd('day', -1, current_date)
+        -- OR its dim_service_request record changed recently
+        or dsr.valid_from >= dateadd('day', -1, current_date)
     {% endif %}
 
 ),
 
--- ── Step 3: sessions ──────────────────────────────────────────────────────────
+-- ── Step 2: sessions ──────────────────────────────────────────────────────────
 sessions as (
 
     select
@@ -87,10 +70,14 @@ sessions as (
         session_id                                  as session_key,
         started_at                                  as session_started_at
     from {{ ref('dim_session') }}
+    {% if is_incremental() %}
+    where session_started_at >= dateadd('day', -1, current_date)
+    {% endif %}
+
 
 ),
 
--- ── Step 4: pro profiles (current version only) ───────────────────────────────
+-- ── Step 3: pro profiles (current version only) ───────────────────────────────
 pro_profiles as (
 
     select
@@ -101,25 +88,11 @@ pro_profiles as (
         pro_key
     from {{ ref('dim_pro') }}
     where is_current = true
-
+    
 ),
 
--- ── Step 5: status transition timestamps ─────────────────────────────────────
--- Using updated_at as proxy for transition time until a status_history
--- table is available for precise per-transition timestamps
-status_timestamps as (
 
-    select
-        sr_id,
-        iff(status in ('matched','completed'),
-            updated_at, null)                       as matched_at,
-        iff(status = 'completed',
-            updated_at, null)                       as completed_at
-    from {{ source('raw', 'service_requests') }}
-
-),
-
--- ── Step 6: final assembly ────────────────────────────────────────────────────
+-- ── Step 5: final assembly ────────────────────────────────────────────────────
 final as (
 
     select
@@ -132,6 +105,7 @@ final as (
         -- ── Foreign keys ─────────────────────────────────────────────────────
         coalesce(s.session_key, 'unknown')          as session_key,
         sr.service_request_key,
+        sr.sp_id,
         pp.pro_key,
         to_char(sr.created_at, 'YYYYMMDD')          as created_at_date_key,
         sr.geography_key,
@@ -146,11 +120,6 @@ final as (
         coalesce(sr.is_cancelled, 0)                as is_cancelled,
         coalesce(sr.is_matched,   0)                as is_matched,
 
-        -- ── Duration metrics (future — nulled until status_history available) ─
-        null::integer                               as session_to_booking_sec,
-        null::integer                               as booking_to_match_sec,
-        null::integer                               as match_to_complete_sec,
-
         -- ── Pro context (denormalized) ────────────────────────────────────────
         pp.market,
         pp.is_active                                as pro_is_active,
@@ -158,16 +127,18 @@ final as (
         -- ── Metadata ─────────────────────────────────────────────────────────
         current_timestamp()                         as dw_updated_at
 
-    from booking_events be
-    inner join service_requests sr
-        on be.sr_id = sr.sr_id
+    from service_requests sr
+    inner join {{ ref('fct_booking_events') }} be
+        on sr.sr_id = be.sr_id
+        {% if is_incremental() %}
+        and be.first_booking_ts >= dateadd('day', -1, current_date)
+        {% endif %}
     left join sessions s
         on be.session_id = s.session_id
     left join pro_profiles pp
-        on sr.category_key = pp.category_key       -- join via category_key (no sp_id on SR)
-    -- status_timestamps for future duration calculation
-    left join status_timestamps st
-        on sr.sr_id = st.sr_id
+        on sr.sp_id = pp.sp_id
+        and sr.category_key = pp.category_key       -- sp_id + category_key: 1:1, no fan-out
+
 
 )
 
