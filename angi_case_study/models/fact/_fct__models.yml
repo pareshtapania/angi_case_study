@@ -238,3 +238,114 @@ models:
                 severity: error
           - not_null:
               name: fct_booking_funnel__booking_key__not_null
+
+  # ===========================================================================
+  # fact.fct_revenue
+  # ===========================================================================
+  - name: fct_revenue
+    description: >
+      Grain: one row per payment transaction (payment_id). Tracks gross revenue
+      charged to the homeowner, the platform commission (Angi take), and the
+      pro payout for each service request payment. Supports revenue reporting,
+      commission analysis, and pro earnings breakdowns. Refunds and chargebacks
+      are recorded as separate rows with net_platform_revenue and net_pro_payout
+      sign-reversed.
+
+    columns:
+
+      - name: revenue_key
+        description: >
+          SHA2 surrogate PK derived from payment_id. Unique per payment
+          transaction.
+        data_tests:
+          - unique:
+              name: fct_revenue__revenue_key__unique
+              config:
+                severity: error
+          - not_null:
+              name: fct_revenue__revenue_key__not_null
+
+      - name: payment_id
+        description: >
+          Natural key from raw_payments. Unique per payment transaction.
+        data_tests:
+          - unique:
+              name: fct_revenue__payment_id__unique
+              config:
+                severity: error
+          - not_null:
+              name: fct_revenue__payment_id__not_null
+
+      - name: sr_id
+        description: >
+          FK to service_requests. Not unique — a service request can have
+          multiple payment rows (e.g. original payment + refund).
+        data_tests:
+          - not_null:
+              name: fct_revenue__sr_id__not_null
+
+      - name: payment_date_key
+        description: >
+          YYYYMMDD char(8) derived from payment_ts; FK to dim_date.date_key.
+        data_tests:
+          - not_null:
+              name: fct_revenue__payment_date_key__not_null
+          - relationships:
+              name: fct_revenue__payment_date_key__fk_dim_date
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+
+      - name: gross_amount
+        description: >
+          Total amount charged to the homeowner in USD.
+        data_tests:
+          - not_null:
+              name: fct_revenue__gross_amount__not_null
+
+      - name: platform_commission
+        description: >
+          Platform revenue (Angi take) for this transaction in USD.
+          gross_amount * commission_rate for standard payments.
+
+      - name: pro_payout_amount
+        description: >
+          Amount paid to the service professional in USD.
+          gross_amount - platform_commission for standard payments.
+
+      - name: net_platform_revenue
+        description: >
+          Signed platform revenue: positive for completed payments, negative
+          for refunds/chargebacks, zero for pending/failed. Use this column
+          (not platform_commission) for P&L reporting.
+
+      - name: net_pro_payout
+        description: >
+          Signed pro payout: positive for completed payments, negative for
+          refunds/chargebacks, zero for pending/failed.
+
+      - name: commission_rate
+        description: >
+          Platform take rate as a decimal (e.g. 0.20 = 20%). Varies by
+          category, pro tier, and geography.
+        data_tests:
+          - not_null:
+              name: fct_revenue__commission_rate__not_null
+
+      - name: payment_status
+        description: >
+          Current payment status: pending, completed, refunded, failed,
+          chargeback.
+        data_tests:
+          - not_null:
+              name: fct_revenue__payment_status__not_null
+          - accepted_values:
+              name: fct_revenue__payment_status__accepted
+              arguments:
+                values: ['pending', 'completed', 'refunded', 'failed', 'chargeback']
+
+      - name: dw_updated_at
+        description: Timestamp written by dbt at model run time.
+        data_tests:
+          - not_null:
+              name: fct_revenue__dw_updated_at__not_null

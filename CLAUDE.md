@@ -45,6 +45,7 @@ The `get_custom_schema` macro in `macros/get_custom_schema.sql` strips the `targ
 | `raw_sessions` | one row per homeowner session | mutable — `ended_at` arrives late |
 | `service_requests` | one row per SR | mutable — `status` updated in place |
 | `raw_pro_profiles` | one row per sp_id **per category** | mutable; sp_id is NOT unique |
+| `raw_payments` | one row per payment transaction | mutable — `payment_status` updated (pending→completed, completed→refunded) |
 
 ### Dimension models (`models/dimension/`)
 
@@ -63,6 +64,7 @@ SCD Type 2 `valid_to` / `is_current` updates for `dim_pro` and `dim_service_requ
 | `fct_booking_events` | first `booking_submitted` event per session | 14 days (late events) | `raw_events` |
 | `fct_booking_funnel` | one row per service request (`sr_id`) | 1 day | `fct_booking_events`, `dim_service_request`, `dim_pro`, `dim_session`, `dim_category`, `dim_geography` |
 | `fct_session_events` | one row per raw user event | 1 day | `raw_events`, `dim_session` |
+| `fct_revenue` | one row per payment transaction (`payment_id`) | 1 day | `raw_payments`, `service_requests`, `dim_service_request`, `dim_pro`, `dim_category`, `dim_geography` |
 
 ### Surrogate keys
 
@@ -80,3 +82,12 @@ Critical guardrails documented there:
 - `booking_key` must be unique in `fct_booking_funnel` — a `dim_pro` fan-out on `category_key` alone (not `sp_id + category_key`) is the main risk and is a P1 failure.
 - Always query from `fct_booking_funnel`, not `raw.service_requests` — the raw table includes SRs with no booking event, changing the denominator.
 - Do NOT group by `pro_key`, `market`, or `pro_is_active` without purpose-built de-duplication logic.
+
+### Key metrics: Revenue
+
+Defined in `models/semantic/revenue_metrics.md`. Base table is `fact.fct_revenue`:
+
+- **`net_platform_revenue`** — Angi's P&L metric: `SUM(net_platform_revenue)`. Sign-aware (positive for completed, negative for refunds/chargebacks).
+- **`net_pro_payout`** — what professionals earn after clawbacks.
+- **`effective_take_rate`** — realized commission: `SUM(net_platform_revenue) / SUM(gross_amount WHERE completed)`.
+- Never mix `fct_revenue` denominators with `fct_booking_funnel` — they have different grains and populations.

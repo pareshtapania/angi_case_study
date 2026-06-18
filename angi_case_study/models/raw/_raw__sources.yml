@@ -157,3 +157,75 @@ sources:
             description: Timestamp when this row was written by the ingestion job.
           - name: _source_file
             description: Source filename for traceability.
+
+      - name: raw_payments
+        description: >
+          One row per payment transaction for a service request. Created when a
+          homeowner pays for a completed service. Mutable — payment_status
+          changes as payments are processed (pending -> completed) or reversed
+          (completed -> refunded). updated_at drives incremental loads in
+          fct_revenue. A service request may have multiple payments if partial
+          refunds or adjustments occur, so sr_id is NOT unique.
+        config:
+          loaded_at_field: _loaded_at
+        columns:
+          - name: payment_id
+            description: Unique identifier for this payment transaction. PK.
+            data_tests:
+              - unique
+              - not_null
+          - name: sr_id
+            description: >
+              FK to service_requests.sr_id. Links the payment to the service
+              request that triggered it. Not unique — partial refunds or
+              adjustments create additional rows for the same sr_id.
+            data_tests:
+              - not_null
+          - name: payment_ts
+            description: UTC timestamp when the payment was initiated.
+            data_tests:
+              - not_null
+          - name: payment_method
+            description: >
+              Payment instrument used. Known values: credit_card, debit_card,
+              ach, digital_wallet.
+          - name: payment_status
+            description: >
+              Current status of this payment. Known values: pending, completed,
+              refunded, failed, chargeback.
+            data_tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values: ['pending', 'completed', 'refunded', 'failed', 'chargeback']
+          - name: gross_amount
+            description: >
+              Total amount charged to the homeowner in USD. For refunds, this
+              is the refunded amount (negative or positive depending on
+              source system convention — fct_revenue normalizes direction).
+            data_tests:
+              - not_null
+          - name: commission_rate
+            description: >
+              Platform take rate applied to this transaction as a decimal
+              (e.g. 0.20 = 20%). Varies by category, pro tier, and geography.
+              Typical range: 0.15–0.25 for Angi fixed-price services.
+            data_tests:
+              - not_null
+          - name: commission_amount
+            description: >
+              Platform revenue for this transaction in USD. Equals
+              gross_amount * commission_rate for standard payments. May differ
+              for promotional or negotiated rates.
+          - name: pro_payout_amount
+            description: >
+              Amount paid (or to be paid) to the service professional in USD.
+              Equals gross_amount - commission_amount for standard payments.
+          - name: updated_at
+            description: >
+              UTC timestamp of the last status change. Incremental trigger
+              for fct_revenue.
+          - name: _loaded_at
+            description: Timestamp when this row was written by the ingestion job.
+          - name: _source_file
+            description: Source filename or transaction batch ID for traceability.
