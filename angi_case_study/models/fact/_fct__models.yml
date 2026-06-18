@@ -76,6 +76,142 @@ models:
               name: fct_booking_events__dw_updated_at__not_null
 
   # ===========================================================================
+  # fact.fct_session_events
+  # ===========================================================================
+  - name: fct_session_events
+    description: >
+      Grain: one row per raw user event. Enriched with session-level context
+      from dim_session, event sequencing, and inter-event timing. Supports
+      site-level engagement, page-level traffic, and event-specific funnel analysis.
+
+    columns:
+
+      - name: event_key
+        description: >
+          SHA2 surrogate PK derived from event_id | session_id | event_ts.
+        data_tests:
+          - unique:
+              name: fct_session_events__event_key__unique
+              config:
+                severity: error
+          - not_null:
+              name: fct_session_events__event_key__not_null
+
+      - name: event_id
+        description: Natural key from raw_events.
+        data_tests:
+          - not_null:
+              name: fct_session_events__event_id__not_null
+
+      - name: session_key
+        description: FK to dim_session. Falls back to raw session_id when dim_session has no match.
+
+      - name: event_type
+        description: Type of event (booking_started, booking_submitted, pro_viewed).
+        data_tests:
+          - not_null:
+              name: fct_session_events__event_type__not_null
+          - accepted_values:
+              name: fct_session_events__event_type__accepted
+              arguments:
+                values: ['booking_started', 'booking_submitted', 'pro_viewed']
+              config:
+                severity: warn
+
+      - name: event_ts
+        description: UTC timestamp when the event fired.
+        data_tests:
+          - not_null:
+              name: fct_session_events__event_ts__not_null
+
+      - name: event_date_key
+        description: Date derived from event_ts; usable as FK to dim_date.full_date.
+
+      - name: properties_sr_id
+        description: Service request ID extracted from the event properties JSON.
+
+      # ── Site-level metrics ──────────────────────────────────────────────────
+      - name: session_started_at
+        description: Session start timestamp from dim_session.
+
+      - name: session_ended_at
+        description: Session end timestamp from dim_session. Null for abandoned/crashed sessions.
+
+      - name: session_duration_sec
+        description: Total session duration in seconds. Null when session has no ended_at.
+
+      - name: is_clean_end
+        description: Whether the session ended cleanly (ended_at populated).
+
+      - name: session_event_count
+        description: Total number of events in this session.
+
+      - name: is_bounce_session
+        description: 1 if the session has exactly one event (single-interaction session).
+
+      - name: seconds_since_session_start
+        description: Seconds elapsed from session start to this event.
+
+      # ── Page-level metrics ──────────────────────────────────────────────────
+      - name: page_type
+        description: Page type active at session start (home, search, booking_form, confirmation).
+
+      - name: is_home_page
+        description: 1 if session started on the home page.
+
+      - name: is_search_page
+        description: 1 if session started on the search page.
+
+      - name: is_booking_form_page
+        description: 1 if session started on the booking form page.
+
+      - name: is_confirmation_page
+        description: 1 if session started on the confirmation page.
+
+      # ── Event-specific metrics ──────────────────────────────────────────────
+      - name: event_sequence_number
+        description: Ordinal position of this event within its session (1-based, ordered by event_ts).
+
+      - name: is_first_event_in_session
+        description: 1 if this is the chronologically first event in the session.
+
+      - name: is_last_event_in_session
+        description: 1 if this is the chronologically last event in the session.
+
+      - name: seconds_since_prev_event
+        description: Seconds elapsed since the previous event in this session. Null for the first event.
+
+      - name: has_sr_id
+        description: 1 if this event carries a service request ID in its properties.
+
+      - name: is_booking_started
+        description: 1 if event_type = booking_started.
+
+      - name: is_booking_submitted
+        description: 1 if event_type = booking_submitted.
+
+      - name: is_pro_viewed
+        description: 1 if event_type = pro_viewed.
+
+      - name: session_booking_started_count
+        description: Total booking_started events in this session (denormalized).
+
+      - name: session_booking_submitted_count
+        description: Total booking_submitted events in this session (denormalized).
+
+      - name: session_pro_viewed_count
+        description: Total pro_viewed events in this session (denormalized).
+
+      - name: session_has_booking_submitted
+        description: 1 if this session contains at least one booking_submitted event.
+
+      - name: dw_updated_at
+        description: Timestamp written by dbt at model run time.
+        data_tests:
+          - not_null:
+              name: fct_session_events__dw_updated_at__not_null
+
+  # ===========================================================================
   # fact.fct_booking_funnel
   # ===========================================================================
   - name: fct_booking_funnel
